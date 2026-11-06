@@ -1,3 +1,10 @@
 {
-  "projects": { "default": "highbar-judge-skyfu218" }
+  "projects": { "default": "ams-athletic-intelligence" },
+  "targets": {
+    "ams-athletic-intelligence": {
+      "hosting": {
+        "highbar-judge": ["highbar-judge-skyfu218"]
+      }
+    }
+  }
 }
