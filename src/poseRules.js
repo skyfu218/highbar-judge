@@ -6,12 +6,12 @@ export const POSE_CONNECTIONS = [
 ];
 
 export const FIG_RULE_REFERENCES = {
-  giant: { code:'I.31', nameEn:'Giant swing backward', nameZh:'後大迴環', group:'I', difficulty:'A', value:.1, figure:'straight' },
-  stalder: { code:'III.38', nameEn:'Stalder through handstand', nameZh:'施塔德近槓迴環至倒立', group:'III', difficulty:'B', value:.2, figure:'pike' },
-  kovacs: { code:'II.88', nameEn:'Kovacs', nameZh:'科瓦克斯騰越', group:'II', difficulty:'D', value:.4, figure:'tuck' },
-  kolman: { code:'II.89', nameEn:'Kolman', nameZh:'科爾曼騰越', group:'II', difficulty:'E', value:.5, figure:'twist' },
-  kovacsStraight: { code:'II.95', nameEn:'Kovacs piked or straight', nameZh:'屈體／直體科瓦克斯', group:'II', difficulty:'E', value:.5, figure:'flight' },
-  dismount: { code:'IV.33', nameEn:'Double salto backward tucked with 1/1 turn', nameZh:'團身後空翻兩周轉體一周下法', group:'IV', difficulty:'C', value:.3, figure:'dismount' },
+  giant: { code:'I.13', nameEn:'Giant swing forward', nameZh:'前大迴環', group:'I', difficulty:'A', value:.1, figure:'straight', officialImage:'/fig-official/i-13-giant-forward.jpg', sourcePage:118 },
+  stalder: { code:'III.38', nameEn:'Stalder through handstand', nameZh:'施塔德近槓迴環至倒立', group:'III', difficulty:'B', value:.2, figure:'pike', officialImage:'/fig-official/iii-38-stalder.jpg', sourcePage:128 },
+  kovacs: { code:'II.88', nameEn:'Kovacs', nameZh:'科瓦克斯騰越', group:'II', difficulty:'D', value:.4, figure:'tuck', officialImage:'/fig-official/ii-88-kovacs.jpg', sourcePage:125 },
+  kolman: { code:'II.89', nameEn:'Kolman', nameZh:'科爾曼騰越', group:'II', difficulty:'E', value:.5, figure:'twist', officialImage:'/fig-official/ii-89-kolman.jpg', sourcePage:125 },
+  kovacsStraight: { code:'II.95', nameEn:'Kovacs piked or straight', nameZh:'屈體／直體科瓦克斯', group:'II', difficulty:'E', value:.5, figure:'flight', officialImage:'/fig-official/ii-95-kovacs-straight.jpg', sourcePage:125 },
+  dismount: { code:'IV.33', nameEn:'Double salto backward tucked with 1/1 turn', nameZh:'團身後空翻兩周轉體一周下法', group:'IV', difficulty:'C', value:.3, figure:'dismount', officialImage:'/fig-official/iv-33-dismount.jpg', sourcePage:133 },
 };
 
 const point = (map, name) => map.get(name);
