@@ -84,20 +84,75 @@ export function acquireGymnast(samples, width, height) {
   return { pose: lockFrame.pose, centroid: lockFrame.identity.centroid, wristAnchor: lockFrame.grip.wristMid, score: winner.score, gripDuration: winner.gripDuration, stableGrip: winner.stableGrip, floorY };
 }
 
+const median = (values) => {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a,b)=>a-b); const middle = Math.floor(sorted.length/2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle-1]+sorted[middle])/2;
+};
+
+export function poseMotionScore(previous, current, width, height) {
+  const diagonal=Math.hypot(width,height);
+  if (!previous || !current) return 0;
+  const prior = mapPose(previous); const now = mapPose(current); const deltas = [];
+  now.forEach((point,name)=>{ const old=prior.get(name); if(visible(point)&&visible(old)) deltas.push(distance(point,old)/diagonal); });
+  return deltas.length ? deltas.reduce((sum,value)=>sum+value,0)/deltas.length : 0;
+}
+
+export function acquireRotatingGymnast(samples, width, height) {
+  const diagonal = Math.hypot(width,height); const tracks = new Map();
+  samples.forEach(({time,poses})=>poses.forEach((pose,index)=>{
+    const identity=poseIdentity(pose); if(!identity||identity.visibleCount<7)return;
+    const key=pose.id ?? `fallback-${index}`;
+    if(!tracks.has(key)) tracks.set(key,[]);
+    tracks.get(key).push({time,pose,identity,grip:gripEvidence(pose)});
+  }));
+
+  const ranked=[...tracks.entries()].map(([targetId,frames])=>{
+    const wristPoints=frames.map((frame)=>frame.grip.wristMid).filter(Boolean);
+    const barAnchor=wristPoints.length?{x:median(wristPoints.map((point)=>point.x)),y:median(wristPoints.map((point)=>point.y))}:{x:median(frames.map((frame)=>frame.identity.centroid.x)),y:median(frames.map((frame)=>frame.identity.box.y1))};
+    const centers=frames.map((frame)=>frame.identity.centroid);
+    const xSpan=(Math.max(...centers.map((point)=>point.x))-Math.min(...centers.map((point)=>point.x)))/width;
+    const ySpan=(Math.max(...centers.map((point)=>point.y))-Math.min(...centers.map((point)=>point.y)))/height;
+    const angles=centers.map((point)=>Math.atan2(point.y-barAnchor.y,point.x-barAnchor.x));
+    const bins=new Set(angles.map((angle)=>Math.floor(((angle+Math.PI)/(Math.PI*2))*12)%12));
+    let angularTravel=0; for(let index=1;index<angles.length;index+=1){let delta=Math.abs(angles[index]-angles[index-1]);if(delta>Math.PI)delta=Math.PI*2-delta;angularTravel+=delta;}
+    let path=0; for(let index=1;index<centers.length;index+=1)path+=distance(centers[index],centers[index-1])/diagonal;
+    const gripRate=frames.filter((frame)=>frame.grip.score>=.55).length/frames.length;
+    const coverage=bins.size/12; const normalizedTravel=Math.min(1,angularTravel/(Math.PI*2)); const normalizedPath=Math.min(1,path/1.7);
+    const score=coverage*.32+normalizedTravel*.23+Math.min(1,ySpan/.42)*.22+normalizedPath*.15+Math.min(1,gripRate/.35)*.08;
+    const radius=median(centers.map((point)=>distance(point,barAnchor)));
+    const motionSamples=frames.slice(1).map((frame,index)=>({time:frame.time,score:poseMotionScore(frames[index].pose,frame.pose,width,height),pose:frame.pose}));
+    return {targetId,frames,barAnchor,xSpan,ySpan,coverage,angularTravel,path,gripRate,radius,motionSamples,score};
+  }).filter((candidate)=>candidate.frames.length>=Math.max(8,samples.length*.08)).sort((a,b)=>b.score-a.score);
+
+  const winner=ranked[0];
+  if(!winner||winner.score<.38||(winner.ySpan<.16&&winner.coverage<.28))return null;
+  const first=winner.frames[0];
+  return {targetId:winner.targetId,pose:first.pose,centroid:first.identity.centroid,startCentroid:first.identity.centroid,barAnchor:winner.barAnchor,radius:winner.radius,score:winner.score,rotationCoverage:winner.coverage,verticalSpan:winner.ySpan,motionSamples:winner.motionSamples};
+}
+
 export function selectLockedAthlete(poses, lock, width, height) {
   if (!poses?.length) return null;
   if (!lock) return poses.map((pose) => ({ pose, identity: poseIdentity(pose) })).filter((item) => item.identity).sort((a, b) => b.identity.visibleCount - a.identity.visibleCount)[0]?.pose || null;
   const diagonal = Math.hypot(width, height);
+  const exact = lock.targetId == null ? null : poses.find((pose)=>pose.id===lock.targetId);
+  if (exact) {
+    const identity=poseIdentity(exact); if(identity)lock.centroid=identity.centroid;
+    return exact;
+  }
   const ranked = poses.map((pose) => {
     const identity = poseIdentity(pose); const grip = gripEvidence(pose);
     if (!identity) return { pose, score: Infinity };
     const bodyDelta = distance(identity.centroid, lock.centroid) / diagonal;
     const handDelta = lock.wristAnchor && grip.wristMid ? distance(grip.wristMid, lock.wristAnchor) / diagonal : 0.2;
-    return { pose, identity, grip, score: bodyDelta * 0.72 + handDelta * 0.28 };
+    const radialDelta=lock.barAnchor&&lock.radius?Math.abs(distance(identity.centroid,lock.barAnchor)-lock.radius)/diagonal:.1;
+    const barDistance=lock.barAnchor?distance(identity.centroid,lock.barAnchor)/diagonal:.2;
+    return { pose, identity, grip, score: bodyDelta * 0.48 + handDelta * 0.12 + radialDelta*.25 + barDistance*.15 };
   }).sort((a, b) => a.score - b.score);
   const selected = ranked[0];
-  if (!selected || selected.score > 0.32) return null;
+  if (!selected || selected.score > 0.38) return null;
   lock.centroid = selected.identity.centroid;
+  if(selected.pose.id!=null)lock.targetId=selected.pose.id;
   if (selected.grip.wristMid && selected.grip.score >= 0.55) lock.wristAnchor = selected.grip.wristMid;
   return selected.pose;
 }

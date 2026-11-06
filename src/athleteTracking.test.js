@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acquireGymnast, correctSideView, selectLockedAthlete } from './athleteTracking';
+import { acquireGymnast, acquireRotatingGymnast, correctSideView, selectLockedAthlete } from './athleteTracking';
 
 const pose = ({ x, wristY, ankleY }) => ({ keypoints: [
   {name:'left_shoulder',x:x-10,y:150,score:.95},{name:'right_shoulder',x:x+10,y:150,score:.95},
@@ -11,6 +11,23 @@ const pose = ({ x, wristY, ankleY }) => ({ keypoints: [
 ] });
 
 describe('gymnast acquisition and tracking', () => {
+  it('chooses the person rotating around a stable bar instead of a moving bystander', () => {
+    const samples=Array.from({length:24},(_,index)=>{
+      const angle=(index/23)*Math.PI*2; const cx=320+Math.cos(angle)*105; const cy=110+Math.sin(angle)*105;
+      const gymnast=pose({x:cx,wristY:100,ankleY:cy+95}); gymnast.id=7;
+      gymnast.keypoints.find((point)=>point.name==='left_wrist').x=308; gymnast.keypoints.find((point)=>point.name==='left_wrist').y=100;
+      gymnast.keypoints.find((point)=>point.name==='right_wrist').x=332; gymnast.keypoints.find((point)=>point.name==='right_wrist').y=101;
+      gymnast.keypoints.filter((point)=>!point.name.includes('wrist')&&!point.name.includes('ankle')).forEach((point)=>{point.y+=cy-180;});
+      const bystander=pose({x:75+index*.8,wristY:175,ankleY:455}); bystander.id=2;
+      return {time:index*.35,poses:[bystander,gymnast]};
+    });
+    const lock=acquireRotatingGymnast(samples,640,480);
+    expect(lock).not.toBeNull();
+    expect(lock.targetId).toBe(7);
+    expect(lock.rotationCoverage).toBeGreaterThan(.5);
+    expect(lock.verticalSpan).toBeGreaterThan(.25);
+  });
+
   it('locks the person who grips overhead and leaves the floor, not a floor bystander', () => {
     const samples = Array.from({length:7},(_,index)=>({time:index*.45,poses:[
       pose({x:320,wristY:100,ankleY:index<2?450:350}),
