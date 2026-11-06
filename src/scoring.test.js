@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeScores, elementAward, estimateVideoDifficulty, formatTime, selectMotionPeaks } from './scoring';
+import { classifyHighBarCandidate, computeScores, elementAward, estimateVideoDifficulty, formatTime, selectMotionPeaks } from './scoring';
 
 describe('high bar scoring', () => {
   it('calculates D, E and final score', () => {
@@ -26,6 +26,11 @@ describe('high bar scoring', () => {
   });
 
   it('creates a conservative two-pass video estimate', () => {
-    expect(estimateVideoDifficulty(.8, 0, 1, .9)).toEqual({ difficulty: 'G', maximum: .7, suggestedDeduction: .1, suggestedAward: .6 });
+    expect(estimateVideoDifficulty(.8, 0, 1, .9)).toEqual({ difficulty: 'E', maximum: .5, suggestedDeduction: .1, suggestedAward: .4 });
+  });
+
+  it('labels high-bar families bilingually and reserves the last peak for dismount', () => {
+    const item = classifyHighBarCandidate({ normalized: .8, position: .92, isLast: true, consistency: .9 });
+    expect(item).toMatchObject({ nameEn: 'Double salto dismount candidate', nameZh: '後空翻下法候選', group: 'IV', difficulty: 'E' });
   });
 });

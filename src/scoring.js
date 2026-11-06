@@ -23,11 +23,30 @@ export function selectMotionPeaks(samples, maxCount = 8, minGap = 1.5) {
 export function estimateVideoDifficulty(score, minScore, maxScore, consistency = 0) {
   const range = Math.max(0.0001, maxScore - minScore);
   const normalized = Math.max(0, Math.min(1, (score - minScore) / range));
-  const difficultyIndex = Math.min(9, Math.floor(normalized * 8));
-  const difficulty = Object.keys(DIFFICULTY_VALUES)[difficultyIndex];
+  const difficulty = normalized >= .9 ? 'F' : normalized >= .72 ? 'E' : normalized >= .5 ? 'D' : normalized >= .28 ? 'C' : 'B';
   const suggestedDeduction = consistency >= 0.82 ? 0.1 : consistency >= 0.62 ? 0.3 : 0.5;
   const maximum = DIFFICULTY_VALUES[difficulty];
   return { difficulty, maximum, suggestedDeduction, suggestedAward: Math.max(0, maximum - suggestedDeduction) };
+}
+
+export function classifyHighBarCandidate({ normalized, position, isLast, consistency }) {
+  let nameEn; let nameZh; let group; let difficulty;
+  if (isLast && position > .78) {
+    nameEn = 'Double salto dismount candidate'; nameZh = '後空翻下法候選'; group = 'IV'; difficulty = normalized > .72 ? 'E' : 'D';
+  } else if (normalized >= .82) {
+    nameEn = 'Kovacs-style flight candidate'; nameZh = '科瓦克斯類飛行候選'; group = 'II'; difficulty = normalized > .94 ? 'F' : 'E';
+  } else if (normalized >= .62) {
+    nameEn = 'Tkatchev-style flight candidate'; nameZh = '特卡切夫類飛行候選'; group = 'II'; difficulty = normalized > .76 ? 'E' : 'D';
+  } else if (normalized >= .38) {
+    nameEn = 'In-bar / Adler element candidate'; nameZh = '近槓／阿德勒動作候選'; group = 'III'; difficulty = normalized > .52 ? 'D' : 'C';
+  } else if (normalized >= .2) {
+    nameEn = 'Giant swing with turn candidate'; nameZh = '大迴環轉體候選'; group = 'I'; difficulty = 'C';
+  } else {
+    nameEn = 'Giant swing candidate'; nameZh = '大迴環候選'; group = 'I'; difficulty = 'B';
+  }
+  const maximum = DIFFICULTY_VALUES[difficulty];
+  const suggestedDeduction = consistency >= .86 ? .1 : consistency >= .68 ? .3 : .5;
+  return { nameEn, nameZh, group, difficulty, maximum, suggestedDeduction, suggestedAward: Math.max(0, maximum - suggestedDeduction), semanticConfidence: consistency * .65 };
 }
 
 export function elementAward(item) {
