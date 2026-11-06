@@ -2,16 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { jsPDF } from 'jspdf';
 import {
-  BarChart3, Check, ChevronRight, ClipboardCheck, Clock3, Download, FileText,
+  Activity, BarChart3, Check, ChevronRight, ClipboardCheck, Clock3, Download, FileText,
   Film, Link2, ListChecks, Pause, Play, Plus, RotateCcw, Share2, Trash2, Upload,
   Video, WandSparkles
 } from 'lucide-react';
-import { computeScores, DIFFICULTY_VALUES, elementAward, ERROR_VALUES, formatTime, GROUPS } from './scoring';
+import { computeScores, DIFFICULTY_VALUES, elementAward, ERROR_VALUES, formatTime, GROUPS, selectMotionPeaks } from './scoring';
 import './styles.css';
 
 const coachProblems = ['擺動節奏與振幅不一致', '倒立線條或肩角未充分打開', '飛行動作接槓位置不穩定', '下法落地控制不足'];
 const coachDirections = ['以節拍與分段擺動建立一致節奏', '加強肩關節活動度與核心線條控制', '使用保護帶練習放槓／接槓時機', '加入落地吸震、定點與壓力情境訓練'];
-const penaltyReasons = ['無明顯錯誤', '倒立角度偏差', '屈膝／分腿', '屈臂接槓', '飛行高度不足', '擺動停頓／節奏中斷', '偏離動作平面', '落地跨步／跳步', '掉落器械', '其他'];
+const penaltyReasons = ['待裁判確認', '無明顯錯誤', '倒立角度偏差', '屈膝／分腿', '屈臂接槓', '飛行高度不足', '擺動停頓／節奏中斷', '偏離動作平面', '落地跨步／跳步', '掉落器械', '其他'];
 const emptyElement = (time = 0) => ({ id: crypto.randomUUID(), time, name: '', group: 'I', difficulty: 'A', recognized: true, deduction: 0, connection: 0, penaltyReason: '無明顯錯誤', note: '' });
 
 function App() {
@@ -27,7 +27,10 @@ function App() {
   const [directions, setDirections] = useState([]);
   const [coachNote, setCoachNote] = useState('');
   const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
   const [toast, setToast] = useState('');
   const videoRef = useRef(null);
   const scores = useMemo(() => computeScores(elements, neutralPenalty, stickBonus), [elements, neutralPenalty, stickBonus]);
@@ -61,6 +64,36 @@ function App() {
     if (videoRef.current.paused) videoRef.current.play(); else videoRef.current.pause();
   };
   const seekTo = (time) => { if (videoRef.current) { videoRef.current.currentTime = time; videoRef.current.play(); } };
+  const seekFrame = (video, time) => new Promise((resolve) => {
+    const done = () => { video.removeEventListener('seeked', done); resolve(); };
+    video.addEventListener('seeked', done, { once: true }); video.currentTime = Math.min(time, Math.max(0, video.duration - 0.05));
+  });
+  const startAnalysis = async () => {
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0 || analyzing) return;
+    setAnalyzing(true); setAnalysisProgress(0); video.pause();
+    const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 36;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const sampleCount = Math.min(90, Math.max(24, Math.ceil(video.duration * 1.2)));
+    const samples = []; let previous = null;
+    try {
+      for (let index = 0; index < sampleCount; index += 1) {
+        const time = 0.25 + (index / Math.max(1, sampleCount - 1)) * Math.max(0.1, video.duration - 0.5);
+        await seekFrame(video, time); context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        const frame = new Uint8Array(canvas.width * canvas.height);
+        for (let p = 0, f = 0; p < pixels.length; p += 4, f += 1) frame[f] = (pixels[p] * .299) + (pixels[p+1] * .587) + (pixels[p+2] * .114);
+        if (previous) { let delta = 0; for (let p = 0; p < frame.length; p += 1) delta += Math.abs(frame[p] - previous[p]); samples.push({ time, score: delta / frame.length / 255 }); }
+        previous = frame; setAnalysisProgress(Math.round(((index + 1) / sampleCount) * 100));
+        if (index % 8 === 0) await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      const peaks = selectMotionPeaks(samples, Math.min(10, Math.max(4, Math.round(video.duration / 6))), Math.max(1.2, video.duration / 24));
+      const candidates = peaks.map((peak, index) => ({ ...emptyElement(peak.time), name: `候選動作 ${index + 1}`, recognized: false, penaltyReason: '待裁判確認', note: `本機畫面變化指標 ${(peak.score * 100).toFixed(1)}%` }));
+      setElements(candidates); setCurrentTime(0); video.currentTime = 0; setStep(2);
+      flash(`整部影片掃描完成：找到 ${candidates.length} 個候選片段，請逐項確認`);
+    } catch { flash('影片分析無法完成，請確認影片格式後重試'); }
+    finally { setAnalyzing(false); setAnalysisProgress(0); }
+  };
   const resetAll = () => {
     if (!window.confirm('確定清除目前分析與本機草稿？')) return;
     localStorage.removeItem('highbar-judge-draft'); window.location.reload();
@@ -121,8 +154,10 @@ function App() {
         <div className="judge-grid">
           <div className="video-panel">
             {!videoUrl ? <label className="dropzone"><input type="file" accept="video/*" onChange={(e) => handleVideo(e.target.files[0])}/><span className="upload-icon"><Upload size={26}/></span><b>匯入單槓比賽影片</b><small>支援瀏覽器可播放的 MP4、MOV、WebM<br/>影片只在此裝置處理，不會自動上傳。</small><span className="upload-btn">選擇影片</span></label> : <>
-              <div className="video-wrap"><video ref={videoRef} src={videoUrl} playsInline onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/><div className="video-overlay"><span><Video size={14}/> {videoName}</span><span>{formatTime(currentTime)}</span></div></div>
+              <div className="video-wrap"><video ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{analyzing && <div className="analysis-overlay"><Activity/><b>正在掃描整部影片</b><span>{analysisProgress}%</span></div>}<div className="video-overlay"><span><Video size={14}/> {videoName}</span><span>{formatTime(currentTime)}</span></div></div>
+              <div className="timeline"><input aria-label="影片時間軸" type="range" min="0" max={duration || 0} step="0.01" value={Math.min(currentTime, duration || 0)} onChange={(e) => { const time = Number(e.target.value); setCurrentTime(time); if (videoRef.current) videoRef.current.currentTime = time; }}/><div><span>{formatTime(currentTime)}</span><span>{formatTime(duration)}</span></div>{elements.map((item)=><button key={`marker-${item.id}`} style={{left:`${duration ? (item.time/duration)*100 : 0}%`}} title={`${formatTime(item.time)} ${item.name}`} onClick={()=>seekTo(item.time)}/>)}</div>
               <div className="transport"><button className="play" onClick={togglePlay}>{playing ? <Pause/> : <Play/>}</button><div><b>{formatTime(currentTime)}</b><small>目前時間碼</small></div><button className="primary" onClick={addElement}><Plus size={18}/> 在此新增動作</button></div>
+              <button className="analyze-button" disabled={analyzing || !duration} onClick={startAnalysis}><Activity/>{analyzing ? `分析中 ${analysisProgress}%` : '開始分析整部影片'}<span>本機畫面變化掃描・不會上傳影片</span></button>
             </>}
             <div className="meta-fields"><label>選手姓名<input value={athlete} onChange={(e) => setAthlete(e.target.value)} placeholder="例：王大明"/></label><label>賽事／日期<input value={eventName} onChange={(e) => setEventName(e.target.value)} placeholder="例：全國錦標賽・決賽"/></label></div>
             <div className="rule-note"><ClipboardCheck/><div><b>評分原則</b><p>難度分與執行分分開紀錄。動作未被認定時不計難度價值，但仍可保留執行扣分與備註。</p></div></div>

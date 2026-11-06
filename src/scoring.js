@@ -9,6 +9,17 @@ export const GROUPS = {
 
 export const ERROR_VALUES = { small: 0.1, medium: 0.3, large: 0.5, fall: 1.0 };
 
+export function selectMotionPeaks(samples, maxCount = 8, minGap = 1.5) {
+  return [...samples]
+    .sort((a, b) => b.score - a.score)
+    .reduce((selected, sample) => {
+      if (selected.length >= maxCount || selected.some((item) => Math.abs(item.time - sample.time) < minGap)) return selected;
+      selected.push(sample);
+      return selected;
+    }, [])
+    .sort((a, b) => a.time - b.time);
+}
+
 export function elementAward(item) {
   const maximum = DIFFICULTY_VALUES[item.difficulty] || 0;
   const difficultyAward = item.recognized ? maximum : 0;
