@@ -7,12 +7,23 @@ import {
   Video, WandSparkles
 } from 'lucide-react';
 import { classifyHighBarCandidate, computeScores, DIFFICULTY_VALUES, elementAward, ERROR_VALUES, formatTime, GROUPS, selectMotionPeaks } from './scoring';
+import { drawPose, matchFigRule } from './poseRules';
 import './styles.css';
 
 const coachProblems = ['擺動節奏與振幅不一致', '倒立線條或肩角未充分打開', '飛行動作接槓位置不穩定', '下法落地控制不足'];
 const coachDirections = ['以節拍與分段擺動建立一致節奏', '加強肩關節活動度與核心線條控制', '使用保護帶練習放槓／接槓時機', '加入落地吸震、定點與壓力情境訓練'];
 const penaltyReasons = ['雙輪影像初估', '待裁判確認', '無明顯錯誤', '倒立角度偏差', '屈膝／分腿', '屈臂接槓', '飛行高度不足', '擺動停頓／節奏中斷', '偏離動作平面', '落地跨步／跳步', '掉落器械', '其他'];
 const emptyElement = (time = 0) => ({ id: crypto.randomUUID(), time, name: '', group: 'I', difficulty: 'A', recognized: true, deduction: 0, connection: 0, penaltyReason: '無明顯錯誤', note: '' });
+
+function RuleFigure({ type = 'straight' }) {
+  const poses = {
+    straight:[[30,14],[30,30],[30,48],[30,67],[30,85]], pike:[[26,14],[30,31],[46,47],[28,57],[16,75]],
+    tuck:[[30,15],[42,28],[48,44],[35,52],[23,45]], twist:[[30,14],[40,28],[32,45],[44,60],[30,78]],
+    flight:[[14,65],[25,43],[40,25],[58,25],[72,43]], dismount:[[14,62],[27,40],[45,27],[64,39],[78,63]],
+  };
+  const points = poses[type] || poses.straight;
+  return <svg viewBox="0 0 90 100" aria-label="FIG 規則簡化姿態圖"><line x1="7" y1="9" x2="83" y2="9" className="bar"/>{points.slice(0,-1).map((p,i)=><line key={i} x1={p[0]} y1={p[1]} x2={points[i+1][0]} y2={points[i+1][1]}/>)}{points.map((p,i)=><circle key={`p${i}`} cx={p[0]} cy={p[1]} r={i===0?5:3}/>)}<line x1={points[1][0]} y1={points[1][1]} x2={points[1][0]-14} y2={points[1][1]+10}/><line x1={points[1][0]} y1={points[1][1]} x2={points[1][0]+14} y2={points[1][1]+10}/></svg>;
+}
 
 function App() {
   const [step, setStep] = useState(1);
@@ -32,8 +43,12 @@ function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [analysisPass, setAnalysisPass] = useState(0);
+  const [poseStatus, setPoseStatus] = useState('idle');
+  const [poseReady, setPoseReady] = useState(false);
   const [toast, setToast] = useState('');
   const videoRef = useRef(null);
+  const poseCanvasRef = useRef(null);
+  const detectorRef = useRef(null);
   const scores = useMemo(() => computeScores(elements, neutralPenalty, stickBonus), [elements, neutralPenalty, stickBonus]);
 
   useEffect(() => {
@@ -50,6 +65,43 @@ function App() {
   useEffect(() => {
     localStorage.setItem('highbar-judge-draft', JSON.stringify({ athlete, eventName, elements, neutralPenalty, stickBonus, problems, directions, coachNote }));
   }, [athlete, eventName, elements, neutralPenalty, stickBonus, problems, directions, coachNote]);
+
+  useEffect(() => {
+    if (!videoUrl || detectorRef.current) return;
+    let cancelled = false;
+    (async () => {
+      setPoseStatus('loading');
+      try {
+        const tf = await import('@tensorflow/tfjs-core');
+        await import('@tensorflow/tfjs-converter');
+        await import('@tensorflow/tfjs-backend-webgl');
+        const [{ load }, { SINGLEPOSE_THUNDER }] = await Promise.all([
+          import('@tensorflow-models/pose-detection/dist/movenet/detector.js'),
+          import('@tensorflow-models/pose-detection/dist/movenet/constants.js'),
+        ]);
+        await tf.setBackend('webgl'); await tf.ready();
+        const detector = await load({ modelType: SINGLEPOSE_THUNDER, enableSmoothing: true, minPoseScore: 0.2 });
+        if (!cancelled) { detectorRef.current = detector; setPoseReady(true); setPoseStatus('ready'); }
+      } catch { if (!cancelled) setPoseStatus('error'); }
+    })();
+    return () => { cancelled = true; };
+  }, [videoUrl]);
+
+  useEffect(() => {
+    if (!poseReady || !videoUrl || analyzing) return;
+    let frame; let busy = false; let stopped = false;
+    const detect = async () => {
+      const video = videoRef.current; const canvas = poseCanvasRef.current;
+      if (!stopped && video && canvas && video.readyState >= 2 && !video.paused && !busy) {
+        busy = true;
+        try { const [pose] = await detectorRef.current.estimatePoses(video); canvas.width=video.videoWidth; canvas.height=video.videoHeight; drawPose(canvas.getContext('2d'),pose,canvas.width,canvas.height); } catch { /* keep playback running */ }
+        busy = false;
+      }
+      if (!stopped) frame = requestAnimationFrame(detect);
+    };
+    frame = requestAnimationFrame(detect);
+    return () => { stopped=true; cancelAnimationFrame(frame); };
+  }, [poseReady, videoUrl, analyzing]);
 
   const flash = (message) => { setToast(message); window.setTimeout(() => setToast(''), 2400); };
   const handleVideo = (file) => {
@@ -103,10 +155,22 @@ function App() {
       });
       const values = reviewed.map((item) => item.combinedScore);
       const minScore = Math.min(...values); const maxScore = Math.max(...values);
+      const ruleMatches = [];
+      for (let index = 0; index < reviewed.length; index += 1) {
+        const peak = reviewed[index]; const normalized = (peak.combinedScore - minScore) / Math.max(.0001, maxScore - minScore);
+        let keypoints = [];
+        if (detectorRef.current) {
+          await seekFrame(video, peak.time);
+          try { const [pose] = await detectorRef.current.estimatePoses(video); keypoints = pose?.keypoints || []; } catch { /* use motion fallback */ }
+        }
+        ruleMatches.push(matchFigRule({ keypoints, normalizedMotion:normalized, position:peak.time/video.duration, isLast:index===reviewed.length-1 }));
+      }
       const candidates = reviewed.map((peak, index) => {
         const normalized = (peak.combinedScore - minScore) / Math.max(.0001, maxScore - minScore);
-        const estimate = classifyHighBarCandidate({ normalized, position: peak.time / video.duration, isLast: index === reviewed.length - 1, consistency: peak.consistency });
-        return { ...emptyElement(peak.time), name: `${estimate.nameEn}／${estimate.nameZh}`, nameEn: estimate.nameEn, nameZh: estimate.nameZh, group: estimate.group, difficulty: estimate.difficulty, recognized: true, deduction: estimate.suggestedDeduction, penaltyReason: '雙輪影像初估', suggestedDeduction: estimate.suggestedDeduction, suggestedAward: estimate.suggestedAward, analysisConfidence: peak.consistency, semanticConfidence: estimate.semanticConfidence, analysisPasses: 2, note: `雙輪畫面一致度 ${(peak.consistency * 100).toFixed(0)}%；動作家族可信度 ${(estimate.semanticConfidence * 100).toFixed(0)}%` };
+        const motionEstimate = classifyHighBarCandidate({ normalized, position: peak.time / video.duration, isLast: index === reviewed.length - 1, consistency: peak.consistency });
+        const rule = ruleMatches[index];
+        const suggestedDeduction = peak.consistency >= .86 ? .1 : peak.consistency >= .68 ? .3 : .5;
+        return { ...emptyElement(peak.time), name: `${rule.nameEn}／${rule.nameZh}`, nameEn: rule.nameEn, nameZh: rule.nameZh, figCode:rule.code, ruleFigure:rule.figure, group: rule.group || motionEstimate.group, difficulty: rule.difficulty || motionEstimate.difficulty, recognized: true, deduction:suggestedDeduction, penaltyReason: '骨架＋雙輪影像初估', suggestedDeduction, suggestedAward: Math.max(0,rule.value-suggestedDeduction), analysisConfidence: peak.consistency, semanticConfidence:rule.similarity, poseConfidence:rule.poseConfidence, visibleKeypoints:rule.visibleKeypoints, analysisPasses: 2, note: `FIG ${rule.code} 候選；骨架相似度 ${(rule.similarity*100).toFixed(0)}%；可見關節 ${rule.visibleKeypoints}/17` };
       });
       setElements(candidates); setCurrentTime(0); video.currentTime = 0; setStep(2);
       flash(`雙輪分析完成：找到 ${candidates.length} 個候選片段，請逐項確認`);
@@ -173,10 +237,10 @@ function App() {
         <div className="judge-grid">
           <div className="video-panel">
             {!videoUrl ? <label className="dropzone"><input type="file" accept="video/*" onChange={(e) => handleVideo(e.target.files[0])}/><span className="upload-icon"><Upload size={26}/></span><b>匯入單槓比賽影片</b><small>支援瀏覽器可播放的 MP4、MOV、WebM<br/>影片只在此裝置處理，不會自動上傳。</small><span className="upload-btn">選擇影片</span></label> : <>
-              <div className="video-wrap"><video ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{analyzing && <div className="analysis-overlay"><Activity/><b>第 {analysisPass} 輪／共 2 輪：正在仔細掃描</b><small>{analysisPass === 1 ? '建立全片動作候選' : '重新取樣並交叉核對'}</small><span>{analysisProgress}%</span></div>}<div className="video-overlay"><span><Video size={14}/> {videoName}</span><span>{formatTime(currentTime)}</span></div></div>
+              <div className="video-wrap"><video ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/><canvas ref={poseCanvasRef} className="pose-canvas"/>{analyzing && <div className="analysis-overlay"><Activity/><b>第 {analysisPass} 輪／共 2 輪：正在仔細掃描</b><small>{analysisPass === 1 ? '建立全片動作候選' : '骨架取樣並與 FIG 規則比對'}</small><span>{analysisProgress}%</span></div>}<div className="video-overlay"><span><Video size={14}/> {videoName}</span><span className={`pose-status ${poseStatus}`}><Activity size={12}/>{poseStatus==='ready'?'OpenPose-style 骨架已啟用':poseStatus==='loading'?'正在載入姿態模型':poseStatus==='error'?'骨架模型無法載入':'等待骨架模型'}</span><span>{formatTime(currentTime)}</span></div></div>
               <div className="timeline"><input aria-label="影片時間軸" type="range" min="0" max={duration || 0} step="0.01" value={Math.min(currentTime, duration || 0)} onChange={(e) => { const time = Number(e.target.value); setCurrentTime(time); if (videoRef.current) videoRef.current.currentTime = time; }}/><div><span>{formatTime(currentTime)}</span><span>{formatTime(duration)}</span></div>{elements.map((item)=><button key={`marker-${item.id}`} style={{left:`${duration ? (item.time/duration)*100 : 0}%`}} title={`${formatTime(item.time)} ${item.name}`} onClick={()=>seekTo(item.time)}/>)}</div>
               <div className="transport"><button className="play" onClick={togglePlay}>{playing ? <Pause/> : <Play/>}</button><div><b>{formatTime(currentTime)}</b><small>目前時間碼</small></div><button className="primary" onClick={addElement}><Plus size={18}/> 在此新增動作</button></div>
-              <button className="analyze-button" disabled={analyzing || !duration} onClick={startAnalysis}><Activity/>{analyzing ? `第 ${analysisPass} 輪分析中 ${analysisProgress}%` : '開始雙輪精細分析'}<span>每輪最高 240 個取樣點・中英動作家族判斷・影片不會上傳</span></button>
+              <button className="analyze-button" disabled={analyzing || !duration || !poseReady} onClick={startAnalysis}><Activity/>{analyzing ? `第 ${analysisPass} 輪分析中 ${analysisProgress}%` : !poseReady ? '等待姿態模型載入' : '開始雙輪精細分析'}<span>每輪最高 240 個取樣點・17 點骨架 × FIG 動作候選・影片不會上傳</span></button>
             </>}
             <div className="meta-fields"><label>選手姓名<input value={athlete} onChange={(e) => setAthlete(e.target.value)} placeholder="例：王大明"/></label><label>賽事／日期<input value={eventName} onChange={(e) => setEventName(e.target.value)} placeholder="例：全國錦標賽・決賽"/></label></div>
             <div className="rule-note"><ClipboardCheck/><div><b>評分原則</b><p>難度分與執行分分開紀錄。動作未被認定時不計難度價值，但仍可保留執行扣分與備註。</p></div></div>
@@ -184,7 +248,7 @@ function App() {
 
           <div className="score-panel">
             <div className="score-summary"><div><small>D 難度分</small><b>{scores.dScore.toFixed(3)}</b><span>動作＋組別＋連結</span></div><div><small>E 執行分</small><b>{scores.eScore.toFixed(3)}</b><span>10.0 − {scores.deductions.toFixed(1)}</span></div><div className="total"><small>預估總分</small><b>{scores.finalScore.toFixed(3)}</b><span>D + E − 中立扣分</span></div></div>
-            <div className="auto-review"><div className="auto-review-head"><Activity/><span><b>自動判斷時間點</b><small>依 FIG 組別與難度值初評；結果已先納入預估總分，如有錯誤再到下方修正</small></span></div>{!elements.length ? <div className="auto-review-empty">匯入影片後按「開始雙輪精細分析」</div> : <div className="auto-review-list">{elements.map((row,index)=><button key={`auto-${row.id}`} onClick={()=>seekTo(row.time)}><time>{formatTime(row.time)}</time><span><b>{row.nameEn || row.name || `Element ${index+1}`}</b><i>{row.nameZh || '人工新增動作'}</i><small>{row.analysisPasses === 2 ? `EG ${row.group}・動作家族可信度 ${Math.round((row.semanticConfidence || 0)*100)}%・雙輪一致度 ${Math.round((row.analysisConfidence || 0)*100)}%` : '人工新增'}</small></span><em>{row.difficulty}<small>最高 {DIFFICULTY_VALUES[row.difficulty].toFixed(1)}</small></em><strong>{row.analysisPasses === 2 ? Number(row.suggestedAward || 0).toFixed(1) : elementAward(row).teachingAward.toFixed(1)}<small>建議分</small></strong></button>)}</div>}</div>
+            <div className="auto-review"><div className="auto-review-head"><Activity/><span><b>骨架 × FIG 規則比對</b><small>右側圖示為本系統依 FIG 代碼重繪的簡化姿態；如有錯誤再到下方修正</small></span></div>{!elements.length ? <div className="auto-review-empty">匯入影片後按「開始雙輪精細分析」</div> : <div className="auto-review-list">{elements.map((row,index)=><button key={`auto-${row.id}`} onClick={()=>seekTo(row.time)}><time>{formatTime(row.time)}</time><span className="rule-thumb"><RuleFigure type={row.ruleFigure}/><small>{row.figCode || 'Manual'}</small></span><span><b>{row.nameEn || row.name || `Element ${index+1}`}</b><i>{row.nameZh || '人工新增動作'}</i><small>{row.analysisPasses === 2 ? `EG ${row.group}・骨架相似度 ${Math.round((row.semanticConfidence || 0)*100)}%・${row.visibleKeypoints || 0}/17 關節` : '人工新增'}</small></span><em>{row.difficulty}<small>最高 {DIFFICULTY_VALUES[row.difficulty].toFixed(1)}</small></em><strong>{row.analysisPasses === 2 ? Number(row.suggestedAward || 0).toFixed(1) : elementAward(row).teachingAward.toFixed(1)}<small>建議分</small></strong></button>)}</div>}</div>
             <details className="manual-editor"><summary><span><ListChecks/>手動修正動作與分數</span><small>自動判斷有錯誤時再展開</small></summary>
             <div className="panel-title"><div><ListChecks/><span><b>動作清單</b><small>{elements.length} 個已標記動作</small></span></div><button onClick={addElement} disabled={!videoUrl}><Plus size={16}/> 新增</button></div>
             <div className="element-list">
@@ -194,7 +258,7 @@ function App() {
                   <div className="row-fields"><label>組別<select value={row.group} onChange={(e) => updateElement(row.id,{group:e.target.value})}>{Object.entries(GROUPS).map(([key,value]) => <option key={key} value={key}>EG {key} · {value}</option>)}</select></label><label>難度<select value={row.difficulty} onChange={(e) => updateElement(row.id,{difficulty:e.target.value})}>{Object.entries(DIFFICULTY_VALUES).map(([key,value]) => <option key={key} value={key}>{key} · {value.toFixed(1)}</option>)}</select></label><label>連結<select value={row.connection} onChange={(e) => updateElement(row.id,{connection:Number(e.target.value)})}><option value="0">0.0</option><option value="0.1">+0.1</option><option value="0.2">+0.2</option></select></label></div>
                   <div className="deductions"><span>E 扣分</span>{Object.entries(ERROR_VALUES).map(([key,value]) => <button key={key} className={Number(row.deduction) === value ? 'selected' : ''} onClick={() => updateElement(row.id,{deduction:Number(row.deduction) === value ? 0 : value})}>{key === 'small'?'小':key === 'medium'?'中':key === 'large'?'大':'掉落'} −{value.toFixed(1)}</button>)}</div>
                   <div className="judgment-row"><label>判斷依據<select value={row.penaltyReason || '無明顯錯誤'} onChange={(e) => updateElement(row.id,{penaltyReason:e.target.value})}>{penaltyReasons.map((reason)=><option key={reason}>{reason}</option>)}</select></label><div className="award-cells"><span>滿分<b>{elementAward(row).maximum.toFixed(1)}</b></span><span>應得<b>{elementAward(row).teachingAward.toFixed(1)}</b></span></div></div>
-                  {row.analysisPasses === 2 && <div className="auto-estimate"><div><Activity/><span><b>{row.nameEn}</b><small>{row.nameZh}・家族可信度 {Math.round((row.semanticConfidence || 0) * 100)}%・雙輪一致度 {Math.round((row.analysisConfidence || 0) * 100)}%</small></span></div><dl><div><dt>初估難度</dt><dd>{row.difficulty}</dd></div><div><dt>難度最高分</dt><dd>{DIFFICULTY_VALUES[row.difficulty].toFixed(1)}</dd></div><div><dt>建議得分</dt><dd>{Number(row.suggestedAward || 0).toFixed(1)}</dd></div></dl><button onClick={()=>updateElement(row.id,{recognized:true,deduction:row.suggestedDeduction,penaltyReason:row.suggestedDeduction <= .1 ? '無明顯錯誤' : '其他'})}><Check/>採用建議並納入總分</button></div>}
+                  {row.analysisPasses === 2 && <div className="auto-estimate"><div className="estimate-title"><RuleFigure type={row.ruleFigure}/><span><b>FIG {row.figCode} · {row.nameEn}</b><small>{row.nameZh}・骨架相似度 {Math.round((row.semanticConfidence || 0) * 100)}%・雙輪一致度 {Math.round((row.analysisConfidence || 0) * 100)}%</small></span></div><dl><div><dt>初估難度</dt><dd>{row.difficulty}</dd></div><div><dt>難度最高分</dt><dd>{DIFFICULTY_VALUES[row.difficulty].toFixed(1)}</dd></div><div><dt>建議得分</dt><dd>{Number(row.suggestedAward || 0).toFixed(1)}</dd></div></dl><button onClick={()=>updateElement(row.id,{recognized:true,deduction:row.suggestedDeduction,penaltyReason:row.suggestedDeduction <= .1 ? '無明顯錯誤' : '其他'})}><Check/>採用建議並納入總分</button></div>}
                   <div className="card-foot"><label className="check"><input type="checkbox" checked={row.recognized} onChange={(e) => updateElement(row.id,{recognized:e.target.checked})}/><span><Check/></span>動作認定</label><input value={row.note} onChange={(e) => updateElement(row.id,{note:e.target.value})} placeholder="裁判備註…"/><button className="delete" onClick={() => setElements(elements.filter((x) => x.id !== row.id))}><Trash2/></button></div>
                 </div>
               </article>)}
