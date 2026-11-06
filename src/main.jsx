@@ -6,12 +6,13 @@ import {
   Film, Link2, ListChecks, Pause, Play, Plus, RotateCcw, Share2, Trash2, Upload,
   Video, WandSparkles
 } from 'lucide-react';
-import { computeScores, DIFFICULTY_VALUES, ERROR_VALUES, formatTime, GROUPS } from './scoring';
+import { computeScores, DIFFICULTY_VALUES, elementAward, ERROR_VALUES, formatTime, GROUPS } from './scoring';
 import './styles.css';
 
 const coachProblems = ['擺動節奏與振幅不一致', '倒立線條或肩角未充分打開', '飛行動作接槓位置不穩定', '下法落地控制不足'];
 const coachDirections = ['以節拍與分段擺動建立一致節奏', '加強肩關節活動度與核心線條控制', '使用保護帶練習放槓／接槓時機', '加入落地吸震、定點與壓力情境訓練'];
-const emptyElement = (time = 0) => ({ id: crypto.randomUUID(), time, name: '', group: 'I', difficulty: 'A', recognized: true, deduction: 0, connection: 0, note: '' });
+const penaltyReasons = ['無明顯錯誤', '倒立角度偏差', '屈膝／分腿', '屈臂接槓', '飛行高度不足', '擺動停頓／節奏中斷', '偏離動作平面', '落地跨步／跳步', '掉落器械', '其他'];
+const emptyElement = (time = 0) => ({ id: crypto.randomUUID(), time, name: '', group: 'I', difficulty: 'A', recognized: true, deduction: 0, connection: 0, penaltyReason: '無明顯錯誤', note: '' });
 
 function App() {
   const [step, setStep] = useState(1);
@@ -70,7 +71,8 @@ function App() {
       body{font-family:-apple-system,BlinkMacSystemFont,"Noto Sans TC",sans-serif;color:#122033;padding:40px;line-height:1.55}h1{font-size:28px}h2{margin-top:28px;border-bottom:2px solid #dae3ec;padding-bottom:8px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #dce4ec;padding:9px;text-align:left}.score{display:flex;gap:20px}.score b{font-size:26px}.muted{color:#64748b}.tag{display:inline-block;padding:4px 9px;background:#e6f6f2;border-radius:99px;margin:3px}footer{margin-top:32px;font-size:11px;color:#64748b}
     </style></head><body><h1>HighBar Judge 單槓檢測報告</h1><p>${athlete || '未填選手'} · ${eventName || '訓練分析'} · ${new Date().toLocaleDateString('zh-TW')}</p>
     <div class="score"><p>D 分<br><b>${scores.dScore.toFixed(3)}</b></p><p>E 分<br><b>${scores.eScore.toFixed(3)}</b></p><p>中立扣分<br><b>${Number(neutralPenalty).toFixed(1)}</b></p><p>總分<br><b>${scores.finalScore.toFixed(3)}</b></p></div>
-    <h2>裁判評分</h2><table><thead><tr><th>時間</th><th>動作</th><th>組別</th><th>難度</th><th>動作價值</th><th>E 扣分</th></tr></thead><tbody>${elements.map((x) => `<tr><td>${formatTime(x.time)}</td><td>${x.name || '未命名'}${x.recognized ? '' : '（未認定）'}</td><td>${x.group}</td><td>${x.difficulty}</td><td>${x.recognized ? DIFFICULTY_VALUES[x.difficulty].toFixed(1) : '0.0'}</td><td>-${Number(x.deduction).toFixed(1)}</td></tr>`).join('')}</tbody></table>
+    <h2>逐動作裁判評分</h2><table><thead><tr><th>時間</th><th>動作與判斷</th><th>組別</th><th>難度</th><th>滿分</th><th>扣分</th><th>應得</th></tr></thead><tbody>${elements.map((x) => { const award = elementAward(x); return `<tr><td>${formatTime(x.time)}</td><td>${x.name || '未命名'}${x.recognized ? '' : '（未認定）'}<br><small>${x.penaltyReason || '人工判讀'}</small></td><td>${x.group}</td><td>${x.difficulty}</td><td>${award.maximum.toFixed(1)}</td><td>-${Number(x.deduction).toFixed(1)}</td><td>${award.teachingAward.toFixed(1)}</td></tr>`; }).join('')}</tbody></table>
+    <p class="muted">逐動作應得分為教學拆解；FIG 正式總分仍依 D + E − 中立扣分計算。</p>
     <h2>教練觀察</h2><h3>看到的問題</h3><p>${problems.map((x) => `<span class="tag">✓ ${x}</span>`).join('') || '未勾選'}</p><h3>改進方向</h3><p>${directions.map((x) => `<span class="tag">✓ ${x}</span>`).join('') || '未勾選'}</p><p>${coachNote || ''}</p>
     <footer>依 FIG MAG Code of Points 2025–2028 設計之人工輔助分析。影片判讀可能受拍攝角度、畫質與幀率影響；本報告不取代 FIG 認證裁判之正式評分。</footer></body></html>`;
 
@@ -82,7 +84,7 @@ function App() {
     doc.setFontSize(20); doc.text(`D ${scores.dScore.toFixed(3)}     E ${scores.eScore.toFixed(3)}     Final ${scores.finalScore.toFixed(3)}`, 42, 172);
     doc.setFontSize(13); doc.text('Judging breakdown', 42, 214); doc.setFontSize(9);
     let y = 238;
-    elements.forEach((x, index) => { if (y > 720) { doc.addPage(); y = 50; } doc.text(`${index + 1}. ${formatTime(x.time)}  ${safe(x.name) || 'Element'}  EG ${x.group}  ${x.difficulty} (${x.recognized ? DIFFICULTY_VALUES[x.difficulty].toFixed(1) : 'NR'})  E -${Number(x.deduction).toFixed(1)}`, 42, y); y += 18; });
+    elements.forEach((x, index) => { const award = elementAward(x); if (y > 720) { doc.addPage(); y = 50; } doc.text(`${index + 1}. ${formatTime(x.time)}  ${safe(x.name) || 'Element'}  EG ${x.group}  ${x.difficulty}  Max ${award.maximum.toFixed(1)}  Ded -${Number(x.deduction).toFixed(1)}  Award ${award.teachingAward.toFixed(1)}`, 42, y); y += 18; });
     y += 14; doc.setFontSize(13); doc.text('Coach review', 42, y); y += 22; doc.setFontSize(9);
     [...problems.map((x) => `Issue: ${safe(x)}`), ...directions.map((x) => `Action: ${safe(x)}`)].forEach((line) => { doc.text(line, 42, y); y += 16; });
     doc.setTextColor(90); doc.setFontSize(8); doc.text('Decision-support only. Not an official FIG score. Video angle and quality may affect review.', 42, 800);
@@ -135,10 +137,12 @@ function App() {
                 <div className="element-main"><input className="element-name" value={row.name} onChange={(e) => updateElement(row.id, {name:e.target.value})} placeholder="輸入動作名稱（例：Kolman）"/>
                   <div className="row-fields"><label>組別<select value={row.group} onChange={(e) => updateElement(row.id,{group:e.target.value})}>{Object.entries(GROUPS).map(([key,value]) => <option key={key} value={key}>EG {key} · {value}</option>)}</select></label><label>難度<select value={row.difficulty} onChange={(e) => updateElement(row.id,{difficulty:e.target.value})}>{Object.entries(DIFFICULTY_VALUES).map(([key,value]) => <option key={key} value={key}>{key} · {value.toFixed(1)}</option>)}</select></label><label>連結<select value={row.connection} onChange={(e) => updateElement(row.id,{connection:Number(e.target.value)})}><option value="0">0.0</option><option value="0.1">+0.1</option><option value="0.2">+0.2</option></select></label></div>
                   <div className="deductions"><span>E 扣分</span>{Object.entries(ERROR_VALUES).map(([key,value]) => <button key={key} className={Number(row.deduction) === value ? 'selected' : ''} onClick={() => updateElement(row.id,{deduction:Number(row.deduction) === value ? 0 : value})}>{key === 'small'?'小':key === 'medium'?'中':key === 'large'?'大':'掉落'} −{value.toFixed(1)}</button>)}</div>
+                  <div className="judgment-row"><label>判斷依據<select value={row.penaltyReason || '無明顯錯誤'} onChange={(e) => updateElement(row.id,{penaltyReason:e.target.value})}>{penaltyReasons.map((reason)=><option key={reason}>{reason}</option>)}</select></label><div className="award-cells"><span>滿分<b>{elementAward(row).maximum.toFixed(1)}</b></span><span>應得<b>{elementAward(row).teachingAward.toFixed(1)}</b></span></div></div>
                   <div className="card-foot"><label className="check"><input type="checkbox" checked={row.recognized} onChange={(e) => updateElement(row.id,{recognized:e.target.checked})}/><span><Check/></span>動作認定</label><input value={row.note} onChange={(e) => updateElement(row.id,{note:e.target.value})} placeholder="裁判備註…"/><button className="delete" onClick={() => setElements(elements.filter((x) => x.id !== row.id))}><Trash2/></button></div>
                 </div>
               </article>)}
             </div>
+            {elements.length > 0 && <div className="breakdown-table"><div className="breakdown-head"><span>時間／動作</span><span>難度</span><span>滿分</span><span>扣分</span><span>應得</span></div>{elements.map((row)=><div className="breakdown-line" key={`score-${row.id}`}><span><button onClick={()=>seekTo(row.time)}>{formatTime(row.time)}</button><b>{row.name || '未命名動作'}</b><small>{row.penaltyReason || '人工判讀'} · {row.recognized ? '已認定' : '未認定'}</small></span><span>{row.difficulty}</span><span>{elementAward(row).maximum.toFixed(1)}</span><span>−{Number(row.deduction).toFixed(1)}</span><span className="earned">{elementAward(row).teachingAward.toFixed(1)}</span></div>)}<div className="breakdown-total"><span>逐動作教學拆解合計<small>不等同 FIG 正式總分</small></span><b>{scores.teachingTotal.toFixed(3)}</b></div></div>}
             <div className="score-controls"><label className="check"><input type="checkbox" checked={stickBonus} onChange={(e)=>setStickBonus(e.target.checked)}/><span><Check/></span>下法站穩獎勵 +0.1（至少 C）</label><label>中立扣分<input type="number" min="0" step="0.1" value={neutralPenalty} onChange={(e)=>setNeutralPenalty(e.target.value)}/></label></div>
             <button className="next" onClick={()=>{setStep(3);document.getElementById('coach').scrollIntoView({behavior:'smooth'})}}>完成裁判評分，前往教練建議 <ChevronRight/></button>
           </div>

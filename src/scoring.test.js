@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeScores, formatTime } from './scoring';
+import { computeScores, elementAward, formatTime } from './scoring';
 
 describe('high bar scoring', () => {
   it('calculates D, E and final score', () => {
@@ -15,4 +15,8 @@ describe('high bar scoring', () => {
   });
 
   it('formats timestamps', () => expect(formatTime(72)).toBe('01:12'));
+
+  it('shows per-element maximum and teaching award', () => {
+    expect(elementAward({ difficulty: 'E', recognized: true, deduction: 0.3 })).toEqual({ maximum: 0.5, difficultyAward: 0.5, teachingAward: 0.2 });
+  });
 });

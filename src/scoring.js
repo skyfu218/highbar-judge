@@ -9,12 +9,24 @@ export const GROUPS = {
 
 export const ERROR_VALUES = { small: 0.1, medium: 0.3, large: 0.5, fall: 1.0 };
 
+export function elementAward(item) {
+  const maximum = DIFFICULTY_VALUES[item.difficulty] || 0;
+  const difficultyAward = item.recognized ? maximum : 0;
+  return { maximum, difficultyAward, teachingAward: Math.max(0, difficultyAward - Number(item.deduction || 0)) };
+}
+
 export function computeScores(elements, neutralPenalty = 0, stickBonus = false) {
   const recognized = elements.filter((item) => item.recognized);
   const dismounts = recognized.filter((item) => item.group === 'IV');
   const nonDismounts = recognized.filter((item) => item.group !== 'IV');
+  const groupCounts = { I: 0, II: 0, III: 0 };
   const counting = [...nonDismounts]
     .sort((a, b) => DIFFICULTY_VALUES[b.difficulty] - DIFFICULTY_VALUES[a.difficulty])
+    .filter((item) => {
+      if (groupCounts[item.group] >= 4) return false;
+      groupCounts[item.group] += 1;
+      return true;
+    })
     .slice(0, 7);
   if (dismounts.length) counting.push(dismounts[dismounts.length - 1]);
 
@@ -30,6 +42,7 @@ export function computeScores(elements, neutralPenalty = 0, stickBonus = false) 
   const dScore = elementDifficulty + groupValue + connection + (stickBonus && dismount && DIFFICULTY_VALUES[dismount.difficulty] >= 0.3 ? 0.1 : 0);
   const deductions = elements.reduce((sum, item) => sum + Number(item.deduction || 0), 0);
   const eScore = Math.max(0, 10 - deductions);
+  const teachingTotal = elements.reduce((sum, item) => sum + elementAward(item).teachingAward, 0);
   return {
     counting,
     elementDifficulty,
@@ -38,6 +51,7 @@ export function computeScores(elements, neutralPenalty = 0, stickBonus = false) 
     deductions,
     dScore,
     eScore,
+    teachingTotal,
     finalScore: Math.max(0, dScore + eScore - Number(neutralPenalty || 0)),
   };
 }
