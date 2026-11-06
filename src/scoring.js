@@ -20,6 +20,16 @@ export function selectMotionPeaks(samples, maxCount = 8, minGap = 1.5) {
     .sort((a, b) => a.time - b.time);
 }
 
+export function estimateVideoDifficulty(score, minScore, maxScore, consistency = 0) {
+  const range = Math.max(0.0001, maxScore - minScore);
+  const normalized = Math.max(0, Math.min(1, (score - minScore) / range));
+  const difficultyIndex = Math.min(9, Math.floor(normalized * 8));
+  const difficulty = Object.keys(DIFFICULTY_VALUES)[difficultyIndex];
+  const suggestedDeduction = consistency >= 0.82 ? 0.1 : consistency >= 0.62 ? 0.3 : 0.5;
+  const maximum = DIFFICULTY_VALUES[difficulty];
+  return { difficulty, maximum, suggestedDeduction, suggestedAward: Math.max(0, maximum - suggestedDeduction) };
+}
+
 export function elementAward(item) {
   const maximum = DIFFICULTY_VALUES[item.difficulty] || 0;
   const difficultyAward = item.recognized ? maximum : 0;

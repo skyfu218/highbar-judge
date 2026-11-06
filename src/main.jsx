@@ -6,12 +6,12 @@ import {
   Film, Link2, ListChecks, Pause, Play, Plus, RotateCcw, Share2, Trash2, Upload,
   Video, WandSparkles
 } from 'lucide-react';
-import { computeScores, DIFFICULTY_VALUES, elementAward, ERROR_VALUES, formatTime, GROUPS, selectMotionPeaks } from './scoring';
+import { computeScores, DIFFICULTY_VALUES, elementAward, ERROR_VALUES, estimateVideoDifficulty, formatTime, GROUPS, selectMotionPeaks } from './scoring';
 import './styles.css';
 
 const coachProblems = ['擺動節奏與振幅不一致', '倒立線條或肩角未充分打開', '飛行動作接槓位置不穩定', '下法落地控制不足'];
 const coachDirections = ['以節拍與分段擺動建立一致節奏', '加強肩關節活動度與核心線條控制', '使用保護帶練習放槓／接槓時機', '加入落地吸震、定點與壓力情境訓練'];
-const penaltyReasons = ['待裁判確認', '無明顯錯誤', '倒立角度偏差', '屈膝／分腿', '屈臂接槓', '飛行高度不足', '擺動停頓／節奏中斷', '偏離動作平面', '落地跨步／跳步', '掉落器械', '其他'];
+const penaltyReasons = ['雙輪影像初估', '待裁判確認', '無明顯錯誤', '倒立角度偏差', '屈膝／分腿', '屈臂接槓', '飛行高度不足', '擺動停頓／節奏中斷', '偏離動作平面', '落地跨步／跳步', '掉落器械', '其他'];
 const emptyElement = (time = 0) => ({ id: crypto.randomUUID(), time, name: '', group: 'I', difficulty: 'A', recognized: true, deduction: 0, connection: 0, penaltyReason: '無明顯錯誤', note: '' });
 
 function App() {
@@ -31,6 +31,7 @@ function App() {
   const [playing, setPlaying] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [analysisPass, setAnalysisPass] = useState(0);
   const [toast, setToast] = useState('');
   const videoRef = useRef(null);
   const scores = useMemo(() => computeScores(elements, neutralPenalty, stickBonus), [elements, neutralPenalty, stickBonus]);
@@ -71,28 +72,45 @@ function App() {
   const startAnalysis = async () => {
     const video = videoRef.current;
     if (!video || !Number.isFinite(video.duration) || video.duration <= 0 || analyzing) return;
-    setAnalyzing(true); setAnalysisProgress(0); video.pause();
+    setAnalyzing(true); setAnalysisProgress(0); setAnalysisPass(1); video.pause();
     const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 36;
     const context = canvas.getContext('2d', { willReadFrequently: true });
-    const sampleCount = Math.min(90, Math.max(24, Math.ceil(video.duration * 1.2)));
-    const samples = []; let previous = null;
-    try {
+    const sampleCount = Math.min(160, Math.max(48, Math.ceil(video.duration * 2.4)));
+    const scanPass = async (pass, offsetRatio) => {
+      setAnalysisPass(pass); let previous = null; const samples = [];
       for (let index = 0; index < sampleCount; index += 1) {
-        const time = 0.25 + (index / Math.max(1, sampleCount - 1)) * Math.max(0.1, video.duration - 0.5);
+        const ratio = Math.min(.995, Math.max(.005, (index + offsetRatio) / sampleCount));
+        const time = ratio * video.duration;
         await seekFrame(video, time); context.drawImage(video, 0, 0, canvas.width, canvas.height);
         const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
         const frame = new Uint8Array(canvas.width * canvas.height);
         for (let p = 0, f = 0; p < pixels.length; p += 4, f += 1) frame[f] = (pixels[p] * .299) + (pixels[p+1] * .587) + (pixels[p+2] * .114);
         if (previous) { let delta = 0; for (let p = 0; p < frame.length; p += 1) delta += Math.abs(frame[p] - previous[p]); samples.push({ time, score: delta / frame.length / 255 }); }
-        previous = frame; setAnalysisProgress(Math.round(((index + 1) / sampleCount) * 100));
-        if (index % 8 === 0) await new Promise((resolve) => requestAnimationFrame(resolve));
+        previous = frame;
+        setAnalysisProgress(Math.round((((pass - 1) * sampleCount + index + 1) / (sampleCount * 2)) * 100));
+        await new Promise((resolve) => window.setTimeout(resolve, 12));
       }
-      const peaks = selectMotionPeaks(samples, Math.min(10, Math.max(4, Math.round(video.duration / 6))), Math.max(1.2, video.duration / 24));
-      const candidates = peaks.map((peak, index) => ({ ...emptyElement(peak.time), name: `候選動作 ${index + 1}`, recognized: false, penaltyReason: '待裁判確認', note: `本機畫面變化指標 ${(peak.score * 100).toFixed(1)}%` }));
+      return samples;
+    };
+    try {
+      const firstPass = await scanPass(1, .15);
+      const secondPass = await scanPass(2, .65);
+      const peaks = selectMotionPeaks(firstPass, Math.min(10, Math.max(4, Math.round(video.duration / 6))), Math.max(1.2, video.duration / 24));
+      const reviewed = peaks.map((peak) => {
+        const comparison = secondPass.reduce((best, item) => Math.abs(item.time - peak.time) < Math.abs(best.time - peak.time) ? item : best, secondPass[0]);
+        const consistency = 1 - Math.min(1, Math.abs(peak.score - comparison.score) / Math.max(.001, peak.score, comparison.score));
+        return { ...peak, secondScore: comparison.score, combinedScore: (peak.score + comparison.score) / 2, consistency };
+      });
+      const values = reviewed.map((item) => item.combinedScore);
+      const minScore = Math.min(...values); const maxScore = Math.max(...values);
+      const candidates = reviewed.map((peak, index) => {
+        const estimate = estimateVideoDifficulty(peak.combinedScore, minScore, maxScore, peak.consistency);
+        return { ...emptyElement(peak.time), name: `自動判斷動作 ${index + 1}`, difficulty: estimate.difficulty, recognized: true, deduction: estimate.suggestedDeduction, penaltyReason: '雙輪影像初估', suggestedDeduction: estimate.suggestedDeduction, suggestedAward: estimate.suggestedAward, analysisConfidence: peak.consistency, analysisPasses: 2, note: `雙輪畫面分析一致度 ${(peak.consistency * 100).toFixed(0)}%` };
+      });
       setElements(candidates); setCurrentTime(0); video.currentTime = 0; setStep(2);
-      flash(`整部影片掃描完成：找到 ${candidates.length} 個候選片段，請逐項確認`);
+      flash(`雙輪分析完成：找到 ${candidates.length} 個候選片段，請逐項確認`);
     } catch { flash('影片分析無法完成，請確認影片格式後重試'); }
-    finally { setAnalyzing(false); setAnalysisProgress(0); }
+    finally { setAnalyzing(false); setAnalysisProgress(0); setAnalysisPass(0); }
   };
   const resetAll = () => {
     if (!window.confirm('確定清除目前分析與本機草稿？')) return;
@@ -154,10 +172,10 @@ function App() {
         <div className="judge-grid">
           <div className="video-panel">
             {!videoUrl ? <label className="dropzone"><input type="file" accept="video/*" onChange={(e) => handleVideo(e.target.files[0])}/><span className="upload-icon"><Upload size={26}/></span><b>匯入單槓比賽影片</b><small>支援瀏覽器可播放的 MP4、MOV、WebM<br/>影片只在此裝置處理，不會自動上傳。</small><span className="upload-btn">選擇影片</span></label> : <>
-              <div className="video-wrap"><video ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{analyzing && <div className="analysis-overlay"><Activity/><b>正在掃描整部影片</b><span>{analysisProgress}%</span></div>}<div className="video-overlay"><span><Video size={14}/> {videoName}</span><span>{formatTime(currentTime)}</span></div></div>
+              <div className="video-wrap"><video ref={videoRef} src={videoUrl} playsInline onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{analyzing && <div className="analysis-overlay"><Activity/><b>第 {analysisPass} 輪／共 2 輪：正在仔細掃描</b><small>{analysisPass === 1 ? '建立全片動作候選' : '重新取樣並交叉核對'}</small><span>{analysisProgress}%</span></div>}<div className="video-overlay"><span><Video size={14}/> {videoName}</span><span>{formatTime(currentTime)}</span></div></div>
               <div className="timeline"><input aria-label="影片時間軸" type="range" min="0" max={duration || 0} step="0.01" value={Math.min(currentTime, duration || 0)} onChange={(e) => { const time = Number(e.target.value); setCurrentTime(time); if (videoRef.current) videoRef.current.currentTime = time; }}/><div><span>{formatTime(currentTime)}</span><span>{formatTime(duration)}</span></div>{elements.map((item)=><button key={`marker-${item.id}`} style={{left:`${duration ? (item.time/duration)*100 : 0}%`}} title={`${formatTime(item.time)} ${item.name}`} onClick={()=>seekTo(item.time)}/>)}</div>
               <div className="transport"><button className="play" onClick={togglePlay}>{playing ? <Pause/> : <Play/>}</button><div><b>{formatTime(currentTime)}</b><small>目前時間碼</small></div><button className="primary" onClick={addElement}><Plus size={18}/> 在此新增動作</button></div>
-              <button className="analyze-button" disabled={analyzing || !duration} onClick={startAnalysis}><Activity/>{analyzing ? `分析中 ${analysisProgress}%` : '開始分析整部影片'}<span>本機畫面變化掃描・不會上傳影片</span></button>
+              <button className="analyze-button" disabled={analyzing || !duration} onClick={startAnalysis}><Activity/>{analyzing ? `第 ${analysisPass} 輪分析中 ${analysisProgress}%` : '開始雙輪仔細分析'}<span>完整掃描兩次並交叉確認・影片不會上傳</span></button>
             </>}
             <div className="meta-fields"><label>選手姓名<input value={athlete} onChange={(e) => setAthlete(e.target.value)} placeholder="例：王大明"/></label><label>賽事／日期<input value={eventName} onChange={(e) => setEventName(e.target.value)} placeholder="例：全國錦標賽・決賽"/></label></div>
             <div className="rule-note"><ClipboardCheck/><div><b>評分原則</b><p>難度分與執行分分開紀錄。動作未被認定時不計難度價值，但仍可保留執行扣分與備註。</p></div></div>
@@ -165,6 +183,8 @@ function App() {
 
           <div className="score-panel">
             <div className="score-summary"><div><small>D 難度分</small><b>{scores.dScore.toFixed(3)}</b><span>動作＋組別＋連結</span></div><div><small>E 執行分</small><b>{scores.eScore.toFixed(3)}</b><span>10.0 − {scores.deductions.toFixed(1)}</span></div><div className="total"><small>預估總分</small><b>{scores.finalScore.toFixed(3)}</b><span>D + E − 中立扣分</span></div></div>
+            <div className="auto-review"><div className="auto-review-head"><Activity/><span><b>自動判斷時間點</b><small>雙輪分析結果已先納入預估總分；如有錯誤再到下方手動修正</small></span></div>{!elements.length ? <div className="auto-review-empty">匯入影片後按「開始雙輪仔細分析」</div> : <div className="auto-review-list">{elements.map((row,index)=><button key={`auto-${row.id}`} onClick={()=>seekTo(row.time)}><time>{formatTime(row.time)}</time><span><b>{row.name || `動作 ${index+1}`}</b><small>{row.analysisPasses === 2 ? `雙輪一致度 ${Math.round((row.analysisConfidence || 0)*100)}%` : '人工新增'}</small></span><em>{row.difficulty}<small>最高 {DIFFICULTY_VALUES[row.difficulty].toFixed(1)}</small></em><strong>{row.analysisPasses === 2 ? Number(row.suggestedAward || 0).toFixed(1) : elementAward(row).teachingAward.toFixed(1)}<small>建議分</small></strong></button>)}</div>}</div>
+            <details className="manual-editor"><summary><span><ListChecks/>手動修正動作與分數</span><small>自動判斷有錯誤時再展開</small></summary>
             <div className="panel-title"><div><ListChecks/><span><b>動作清單</b><small>{elements.length} 個已標記動作</small></span></div><button onClick={addElement} disabled={!videoUrl}><Plus size={16}/> 新增</button></div>
             <div className="element-list">
               {!elements.length ? <div className="empty"><Film/><b>尚未標記動作</b><p>播放影片，在動作發生處按「在此新增動作」。</p></div> : elements.map((row, index) => <article className="element-card" key={row.id}>
@@ -173,11 +193,13 @@ function App() {
                   <div className="row-fields"><label>組別<select value={row.group} onChange={(e) => updateElement(row.id,{group:e.target.value})}>{Object.entries(GROUPS).map(([key,value]) => <option key={key} value={key}>EG {key} · {value}</option>)}</select></label><label>難度<select value={row.difficulty} onChange={(e) => updateElement(row.id,{difficulty:e.target.value})}>{Object.entries(DIFFICULTY_VALUES).map(([key,value]) => <option key={key} value={key}>{key} · {value.toFixed(1)}</option>)}</select></label><label>連結<select value={row.connection} onChange={(e) => updateElement(row.id,{connection:Number(e.target.value)})}><option value="0">0.0</option><option value="0.1">+0.1</option><option value="0.2">+0.2</option></select></label></div>
                   <div className="deductions"><span>E 扣分</span>{Object.entries(ERROR_VALUES).map(([key,value]) => <button key={key} className={Number(row.deduction) === value ? 'selected' : ''} onClick={() => updateElement(row.id,{deduction:Number(row.deduction) === value ? 0 : value})}>{key === 'small'?'小':key === 'medium'?'中':key === 'large'?'大':'掉落'} −{value.toFixed(1)}</button>)}</div>
                   <div className="judgment-row"><label>判斷依據<select value={row.penaltyReason || '無明顯錯誤'} onChange={(e) => updateElement(row.id,{penaltyReason:e.target.value})}>{penaltyReasons.map((reason)=><option key={reason}>{reason}</option>)}</select></label><div className="award-cells"><span>滿分<b>{elementAward(row).maximum.toFixed(1)}</b></span><span>應得<b>{elementAward(row).teachingAward.toFixed(1)}</b></span></div></div>
+                  {row.analysisPasses === 2 && <div className="auto-estimate"><div><Activity/><span><b>雙輪影像初評</b><small>兩輪一致度 {Math.round((row.analysisConfidence || 0) * 100)}%・待裁判確認</small></span></div><dl><div><dt>初估難度</dt><dd>{row.difficulty}</dd></div><div><dt>難度最高分</dt><dd>{DIFFICULTY_VALUES[row.difficulty].toFixed(1)}</dd></div><div><dt>建議得分</dt><dd>{Number(row.suggestedAward || 0).toFixed(1)}</dd></div></dl><button onClick={()=>updateElement(row.id,{recognized:true,deduction:row.suggestedDeduction,penaltyReason:row.suggestedDeduction <= .1 ? '無明顯錯誤' : '其他'})}><Check/>採用建議並納入總分</button></div>}
                   <div className="card-foot"><label className="check"><input type="checkbox" checked={row.recognized} onChange={(e) => updateElement(row.id,{recognized:e.target.checked})}/><span><Check/></span>動作認定</label><input value={row.note} onChange={(e) => updateElement(row.id,{note:e.target.value})} placeholder="裁判備註…"/><button className="delete" onClick={() => setElements(elements.filter((x) => x.id !== row.id))}><Trash2/></button></div>
                 </div>
               </article>)}
             </div>
             {elements.length > 0 && <div className="breakdown-table"><div className="breakdown-head"><span>時間／動作</span><span>難度</span><span>滿分</span><span>扣分</span><span>應得</span></div>{elements.map((row)=><div className="breakdown-line" key={`score-${row.id}`}><span><button onClick={()=>seekTo(row.time)}>{formatTime(row.time)}</button><b>{row.name || '未命名動作'}</b><small>{row.penaltyReason || '人工判讀'} · {row.recognized ? '已認定' : '未認定'}</small></span><span>{row.difficulty}</span><span>{elementAward(row).maximum.toFixed(1)}</span><span>−{Number(row.deduction).toFixed(1)}</span><span className="earned">{elementAward(row).teachingAward.toFixed(1)}</span></div>)}<div className="breakdown-total"><span>逐動作教學拆解合計<small>不等同 FIG 正式總分</small></span><b>{scores.teachingTotal.toFixed(3)}</b></div></div>}
+            </details>
             <div className="score-controls"><label className="check"><input type="checkbox" checked={stickBonus} onChange={(e)=>setStickBonus(e.target.checked)}/><span><Check/></span>下法站穩獎勵 +0.1（至少 C）</label><label>中立扣分<input type="number" min="0" step="0.1" value={neutralPenalty} onChange={(e)=>setNeutralPenalty(e.target.value)}/></label></div>
             <button className="next" onClick={()=>{setStep(3);document.getElementById('coach').scrollIntoView({behavior:'smooth'})}}>完成裁判評分，前往教練建議 <ChevronRight/></button>
           </div>

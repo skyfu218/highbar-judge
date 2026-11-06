@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeScores, elementAward, formatTime, selectMotionPeaks } from './scoring';
+import { computeScores, elementAward, estimateVideoDifficulty, formatTime, selectMotionPeaks } from './scoring';
 
 describe('high bar scoring', () => {
   it('calculates D, E and final score', () => {
@@ -23,5 +23,9 @@ describe('high bar scoring', () => {
   it('selects separated motion peaks in timeline order', () => {
     const peaks = selectMotionPeaks([{time:1,score:.9},{time:1.5,score:.8},{time:4,score:.7}], 2, 1);
     expect(peaks.map((item) => item.time)).toEqual([1, 4]);
+  });
+
+  it('creates a conservative two-pass video estimate', () => {
+    expect(estimateVideoDifficulty(.8, 0, 1, .9)).toEqual({ difficulty: 'G', maximum: .7, suggestedDeduction: .1, suggestedAward: .6 });
   });
 });
